@@ -1,0 +1,25 @@
+# Secrets — jamais commités
+.env
+
+# Données locales (landing JSON + Parquet bronze)
+data/
+
+# DuckDB matérialisé par dbt
+*.duckdb
+*.duckdb.wal
+
+# dbt
+transform/dbt_velos/target/
+transform/dbt_velos/dbt_packages/
+transform/dbt_velos/logs/
+
+# Dagster
+.dagster/
+tmp*/
+
+# Python
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.venv/
+.run/

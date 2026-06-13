@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "observatoire-velos-tbm"
+version = "0.1.0"
+description = "Observatoire de la disponibilité des vélos en libre-service TBM (pipeline lakehouse GBFS)"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "polars>=0.20",
+    "boto3>=1.34",
+    "duckdb>=0.10",
+    "dagster>=1.7",
+    "dagster-dbt>=0.23",
+    "dbt-duckdb>=1.7",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "dagster-webserver>=1.7",
+    "pytest>=8.0",
+]
+
+[tool.setuptools]
+packages = ["ingestion", "lake", "orchestration", "analysis"]
+
+[tool.dagster]
+module_name = "orchestration.definitions"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,67 @@
+version: 2
+
+models:
+  - name: stg_station_status
+    description: >
+      Silver — statuts de stations nettoyés, typés et dédoublonnés sur
+      (station_id, collected_at). collected_at est notre horodatage
+      d'observation ; last_reported celui de TBM, possiblement plus ancien.
+    columns:
+      - name: status_key
+        description: Clé d'unicité station_id|collected_at.
+        tests:
+          - unique
+          - not_null
+      - name: station_id
+        tests:
+          - not_null
+      - name: num_bikes_available
+        tests:
+          - not_null
+      - name: num_docks_available
+        tests:
+          - not_null
+      - name: collected_at
+        tests:
+          - not_null
+
+  - name: mart_tension_stations
+    description: >
+      Gold — part du temps passé sans vélo / sans place par station et
+      indicateur booléen de tension (>= 20 % d'observations sans vélo).
+    columns:
+      - name: station_id
+        tests:
+          - unique
+          - not_null
+          - relationships:
+              to: ref('stg_station_status')
+              field: station_id
+      - name: pct_temps_sans_velo
+        tests:
+          - not_null
+      - name: en_tension
+        tests:
+          - not_null
+
+  - name: mart_profil_horaire
+    description: >
+      Gold — disponibilité moyenne par station et heure UTC de la journée.
+    columns:
+      - name: profil_key
+        description: Clé d'unicité station_id|heure_utc.
+        tests:
+          - unique
+          - not_null
+      - name: station_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_station_status')
+              field: station_id
+      - name: heure_utc
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+              quote: false

@@ -1,0 +1,19 @@
+version: 2
+
+sources:
+  - name: bronze
+    description: >
+      Parquet bronze sur MinIO, lu par DuckDB via httpfs/S3. Vérité d'origine
+      figée : aucune transformation en amont de ces tables.
+    schema: main
+    tables:
+      - name: station_status
+        description: Statuts temps réel des stations (1 fichier / collecte de 5 min).
+        meta:
+          external_location: >-
+            read_parquet('s3://{{ env_var('MINIO_BUCKET', 'lake') }}/bronze/station_status/date=*/*.parquet', hive_partitioning = true)
+      - name: station_information
+        description: Référentiel statique des stations (1 collecte / jour).
+        meta:
+          external_location: >-
+            read_parquet('s3://{{ env_var('MINIO_BUCKET', 'lake') }}/bronze/station_information/date=*/*.parquet', hive_partitioning = true)
