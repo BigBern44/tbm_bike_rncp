@@ -8,13 +8,12 @@ exactement le même fichier Parquet (idempotence par écrasement).
 from __future__ import annotations
 
 import argparse
+import io
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 import polars as pl
-
-DEFAULT_BRONZE_DIR = Path("data/bronze")
 
 SCHEMA_STATION_STATUS: dict[str, pl.DataType] = {
     "station_id": pl.Utf8,
@@ -133,70 +132,73 @@ def station_information_to_df(payload: dict, collected_at: datetime) -> pl.DataF
     return pl.DataFrame(rows, schema=SCHEMA_STATION_INFORMATION).sort("station_id")
 
 
-def write_parquet(
-    df: pl.DataFrame,
-    feed_name: str,
-    collected_at: datetime,
-    base_dir: Path = DEFAULT_BRONZE_DIR,
-) -> Path:
-    """Écrit le Parquet en partition date=AAAA-MM-JJ et retourne le chemin.
+def _object_key(feed_name: str, collected_at: datetime, layer: str = "bronze") -> str:
+    """Clé objet S3 partitionnée : <layer>/<feed>/date=AAAA-MM-JJ/<horodatage>.parquet.
 
-    Un re-run sur le même horodatage écrase le même fichier : jamais de doublon.
+    Un re-run sur le même horodatage réécrit la même clé : jamais de doublon.
     """
     partition = collected_at.strftime("date=%Y-%m-%d")
     stamp = collected_at.strftime("%Y%m%dT%H%M%SZ")
-    target = base_dir / feed_name / partition / f"{stamp}.parquet"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    df.write_parquet(target)
-    return target
+    return f"{layer}/{feed_name}/{partition}/{stamp}.parquet"
 
 
-def convert(raw_json_path: Path, base_dir: Path = DEFAULT_BRONZE_DIR) -> list[Path]:
-    """Convertit un JSON landing en Parquet bronze. Retourne les chemins écrits.
+def _to_parquet_bytes(df: pl.DataFrame) -> bytes:
+    """Sérialise un DataFrame en Parquet en mémoire (aucun fichier local)."""
+    buffer = io.BytesIO()
+    df.write_parquet(buffer)
+    return buffer.getvalue()
 
-    Le flux est déduit du chemin (data/landing/<feed>/...). station_status
-    produit deux Parquet : les statuts et la liaison vehicle_types.
+
+def convert(raw_json_path: Path) -> list[tuple[str, bytes]]:
+    """Convertit un JSON landing en Parquet bronze, entièrement en mémoire.
+
+    Retourne une liste de (clé_objet_s3, contenu_parquet) : rien n'est écrit sur
+    le disque local — l'upload vers MinIO est laissé à l'appelant. Le flux est
+    déduit du chemin (data/landing/<feed>/...). station_status produit deux
+    Parquet : les statuts et la liaison vehicle_types.
     """
     feed_name = raw_json_path.parent.parent.name
     payload, collected_at = load_raw_json(raw_json_path)
 
     if feed_name == "station_status":
         return [
-            write_parquet(
-                station_status_to_df(payload, collected_at),
-                "station_status",
-                collected_at,
-                base_dir,
+            (
+                _object_key("station_status", collected_at),
+                _to_parquet_bytes(station_status_to_df(payload, collected_at)),
             ),
-            write_parquet(
-                station_status_vehicle_to_df(payload, collected_at),
-                "station_status_vehicle",
-                collected_at,
-                base_dir,
+            (
+                _object_key("station_status_vehicle", collected_at),
+                _to_parquet_bytes(
+                    station_status_vehicle_to_df(payload, collected_at)
+                ),
             ),
         ]
     if feed_name == "station_information":
         return [
-            write_parquet(
-                station_information_to_df(payload, collected_at),
-                "station_information",
-                collected_at,
-                base_dir,
+            (
+                _object_key("station_information", collected_at),
+                _to_parquet_bytes(station_information_to_df(payload, collected_at)),
             )
         ]
     raise ValueError(f"Flux non géré pour la conversion Parquet : {feed_name}")
 
 
 def main() -> None:
-    """Point d'entrée CLI : python -m ingestion.to_parquet <chemin_json>."""
-    parser = argparse.ArgumentParser(description="Conversion JSON GBFS → Parquet typé.")
-    parser.add_argument("json_path", type=Path, help="Chemin du JSON landing")
-    parser.add_argument(
-        "--base-dir", type=Path, default=DEFAULT_BRONZE_DIR, help="Répertoire bronze"
+    """Point d'entrée CLI : python -m ingestion.to_parquet <chemin_json>.
+
+    Convertit en mémoire puis téléverse directement vers MinIO bronze/ ;
+    aucun Parquet n'est écrit sur le disque local.
+    """
+    from lake import minio_client
+
+    parser = argparse.ArgumentParser(
+        description="Conversion JSON GBFS → Parquet typé, téléversé vers MinIO."
     )
+    parser.add_argument("json_path", type=Path, help="Chemin du JSON landing")
     args = parser.parse_args()
-    for path in convert(args.json_path, args.base_dir):
-        print(f"Parquet écrit : {path}")
+    for key, data in convert(args.json_path):
+        uri = minio_client.upload_parquet_bytes(key, data)
+        print(f"Parquet téléversé : {uri}")
 
 
 if __name__ == "__main__":

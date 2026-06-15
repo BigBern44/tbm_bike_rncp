@@ -31,12 +31,10 @@ suffit à cette volumétrie, le tout en local / on-premise.
 ## Architecture (médaillon)
 
 ```
-GBFS API ──requests──►  JSON brut         (bronze landing : data/landing/)
+GBFS API ──requests──►  JSON brut         (bronze landing : data/landing/, local)
                             │
-                       Polars : typage explicite
-                            ▼
-                        Parquet           (data/bronze/)
-                            │
+                       Polars : typage explicite, Parquet sérialisé EN MÉMOIRE
+                            │   (aucun Parquet écrit sur le disque local)
                        upload S3
                             ▼
                         MinIO  s3://lake/bronze/<feed>/date=AAAA-MM-JJ/*.parquet
@@ -48,7 +46,12 @@ GBFS API ──requests──►  JSON brut         (bronze landing : data/landi
                         velos.duckdb  ──►  requêtes d'analyse
 ```
 
-- **Bronze** — JSON brut + Parquet 1:1 de la source. Vérité d'origine figée, rejouable.
+> **Le Parquet bronze ne vit que sur MinIO.** Il est converti en mémoire puis
+> téléversé directement : rien n'est stocké localement sous `data/bronze/`
+> (seul le JSON landing reste sur le disque). Cela évite la saturation du disque
+> local sur le long terme.
+
+- **Bronze** — JSON brut (local) + Parquet 1:1 sur MinIO. Vérité d'origine figée, rejouable.
 - **Silver** — modèles dbt `stg_*` : nettoyés, typés, dédoublonnés (matérialisés en *view*).
 - **Gold** — modèles dbt `mart_*` : agrégats et indicateurs métier (matérialisés en *table*), testés.
 
@@ -116,10 +119,9 @@ Défini dans [orchestration/definitions.py](orchestration/definitions.py).
 
 | Étape | Asset | Description |
 |---|---|---|
-| Bronze | `raw_station_status` | Appel GBFS `station_status`, JSON brut horodaté |
-| Bronze | `parquet_station_status` | Conversion Polars typée → Parquet (statuts + liaison vehicle_types) |
-| Bronze | `minio_station_status` | Upload des Parquet vers MinIO `bronze/` |
-| Bronze | `raw_/parquet_/minio_station_information` | Même chaîne pour le référentiel des stations |
+| Bronze | `raw_station_status` | Appel GBFS `station_status`, JSON brut horodaté (local, `data/landing/`) |
+| Bronze | `minio_station_status` | Conversion Polars typée **en mémoire** (statuts + liaison vehicle_types) puis upload direct vers MinIO `bronze/` |
+| Bronze | `raw_/minio_station_information` | Même chaîne pour le référentiel des stations |
 | Silver+Gold | `dbt_velos_assets` | `dbt build` : modèles `stg_`/`mart_` + tests |
 
 **Automatisation :**
@@ -138,20 +140,22 @@ Défini dans [orchestration/definitions.py](orchestration/definitions.py).
 Chaque module d'ingestion a un point d'entrée CLI :
 
 ```bash
-# 1. Collecte GBFS → JSON brut (data/landing/)
+# 1. Collecte GBFS → JSON brut (local, data/landing/)
 .venv/bin/python -m ingestion.collect_api station_status
 .venv/bin/python -m ingestion.collect_api station_information
 
-# 2. JSON → Parquet typé (data/bronze/)
+# 2. JSON → Parquet typé EN MÉMOIRE, téléversé direct vers MinIO bronze/
+#    (aucun Parquet écrit localement ; nécessite les credentials MinIO dans l'env)
 .venv/bin/python -m ingestion.to_parquet data/landing/station_status/date=2026-06-13/<horodatage>.json
-
-# 3. Upload vers MinIO (nécessite les credentials dans l'environnement)
-#    réalisé par l'asset minio_* ; lake/minio_client.upload_parquet() en API.
 
 # Scraping complémentaire (alertes & actualités du site public TBM)
 .venv/bin/python -m ingestion.scrape_alertes
 .venv/bin/python -m ingestion.crawl_actus
 ```
+
+> En API : `to_parquet.convert(json_path)` retourne des couples
+> `(clé_objet_s3, octets_parquet)` sans rien écrire sur disque, et
+> `minio_client.upload_parquet_bytes(clé, octets)` les téléverse.
 
 Transformation dbt directement (depuis `transform/dbt_velos/`, avec le `.env` chargé) :
 

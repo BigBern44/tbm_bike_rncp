@@ -57,10 +57,10 @@ Volumétrie : ~55 000 lignes/jour de statuts (~20 M/an). Aucune donnée personne
 ```
                          ┌──────────── Dagster (orchestration, assets) ───────────┐
                          │                                                         │
-GBFS API ──requests──► JSON brut (bronze, landing)                                 │
+GBFS API ──requests──► JSON brut (bronze, landing local)                           │
                          │                                                         │
-                    Polars: typage + conversion                                    │
-                         ▼                                                         │
+                    Polars: typage + conversion Parquet EN MÉMOIRE                 │
+                         ▼   (aucun Parquet sur le disque local)                   │
               Parquet  ──► MinIO  s3://lake/bronze/station_status/date=…/*.parquet │
                          │                                                         │
                     DuckDB (httpfs/S3) lit MinIO                                   │
@@ -74,7 +74,9 @@ GBFS API ──requests──► JSON brut (bronze, landing)                    
 ```
 
 Couches médaillon :
-- **Bronze** : JSON brut + Parquet 1:1 de la source (rejouabilité, vérité d'origine).
+- **Bronze** : JSON brut local (landing) + Parquet 1:1 de la source sur MinIO,
+  converti en mémoire et téléversé directement — jamais stocké en local
+  (rejouabilité, vérité d'origine, pas de saturation disque).
 - **Silver** : modèles dbt `staging_*` (nettoyés, typés, dédoublonnés).
 - **Gold** : modèles dbt `mart_*` (jointures, agrégats, indicateurs, testés).
 
@@ -95,10 +97,10 @@ observatoire-velos-tbm/
 │   ├── collect_api.py             # appels GBFS → JSON brut
 │   ├── scrape_alertes.py          # web scraping alertes
 │   ├── crawl_actus.py             # web crawling actualités
-│   └── to_parquet.py              # JSON → Parquet typé (Polars)
+│   └── to_parquet.py              # JSON → Parquet typé en mémoire (Polars), sans fichier local
 │
 ├── lake/
-│   └── minio_client.py            # upload Parquet vers bronze (S3)
+│   └── minio_client.py            # upload des octets Parquet vers bronze (S3)
 │
 ├── transform/
 │   └── dbt_velos/
@@ -130,15 +132,16 @@ observatoire-velos-tbm/
 
 - Python : PEP 8, type hints, docstrings sur fonctions publiques.
 - Secrets via `os.environ` / ressources Dagster. `.env.example` tenu à jour.
-- Idempotence : conversion Parquet déterministe ; chemins partitionnés
-  `bronze/station_status/date=AAAA-MM-JJ/{horodatage}.parquet`. Réécrire un run
-  écrase le même fichier, jamais de doublon.
+- Idempotence : conversion Parquet déterministe (en mémoire, jamais sur disque) ;
+  clés objet partitionnées `bronze/station_status/date=AAAA-MM-JJ/{horodatage}.parquet`.
+  Réécrire un run écrase le même objet MinIO, jamais de doublon.
 - dbt : `stg_` (silver) puis `mart_` (gold) ; toute clé d'unicité et non-nullité
   testée (`unique`, `not_null`) dans `schema.yml`. Pas de SQL analytique hors dbt.
 - Distinguer `collected_at` (horodatage d'observation, notre vérité) de
   `last_reported` (horodatage TBM, possiblement plus ancien).
-- Dagster : un asset par étape (`raw_json`, `parquet`, `minio_upload`, puis assets dbt
-  via `dagster-dbt`). Les dépendances entre assets reflètent le pipeline.
+- Dagster : un asset par étape (`raw_*` JSON landing, puis `minio_*` qui convertit
+  en mémoire et téléverse le Parquet, puis assets dbt via `dagster-dbt`). Les
+  dépendances entre assets reflètent le pipeline.
 - Commits : `type(scope): message` (ex. `feat(ingestion): pagination GBFS`).
 
 ---
@@ -162,10 +165,10 @@ les contraintes CHECK exprimées dans les modèles (num_*_available >= 0).
 
 ## 8. Pipeline de bout en bout (assets Dagster)
 
-1. `raw_station_status` — appel GBFS, écrit le JSON brut horodaté (bronze landing).
-2. `parquet_station_status` — Polars typé, écrit le Parquet local.
-3. `minio_station_status` — upload du Parquet vers MinIO `bronze/`.
-4. assets **dbt** (`dagster-dbt`) — `stg_station_status` (silver) puis
+1. `raw_station_status` — appel GBFS, écrit le JSON brut horodaté (bronze landing local).
+2. `minio_station_status` — Polars typé, sérialise le Parquet en mémoire et le
+   téléverse vers MinIO `bronze/` (statuts + liaison vehicle_types). Pas de fichier local.
+3. assets **dbt** (`dagster-dbt`) — `stg_station_status` (silver) puis
    `mart_tension_stations`, `mart_profil_horaire` (gold), avec tests.
 
 Schedules : collecte `station_status` toutes les 5 min ; `station_information` 1×/jour.

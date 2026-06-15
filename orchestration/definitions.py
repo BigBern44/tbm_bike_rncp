@@ -58,21 +58,16 @@ def raw_station_status(context: AssetExecutionContext) -> str:
 
 
 @asset(group_name="bronze_station_status")
-def parquet_station_status(
-    context: AssetExecutionContext, raw_station_status: str
-) -> list[str]:
-    """Conversion Polars typée du JSON brut en Parquet local."""
-    paths = to_parquet.convert(Path(raw_station_status))
-    context.log.info("Parquet écrits : %s", paths)
-    return [str(p) for p in paths]
-
-
-@asset(group_name="bronze_station_status")
 def minio_station_status(
-    context: AssetExecutionContext, parquet_station_status: list[str]
+    context: AssetExecutionContext, raw_station_status: str
 ) -> MaterializeResult:
-    """Upload des Parquet station_status vers MinIO bronze/."""
-    uris = [minio_client.upload_parquet(Path(p)) for p in parquet_station_status]
+    """Conversion Polars typée en mémoire puis upload des Parquet vers MinIO bronze/.
+
+    Aucun Parquet n'est écrit sur le disque local : le JSON brut (landing) reste
+    la seule trace locale, le Parquet ne vit que sur l'objet store.
+    """
+    objects = to_parquet.convert(Path(raw_station_status))
+    uris = [minio_client.upload_parquet_bytes(key, data) for key, data in objects]
     context.log.info("Objets téléversés : %s", uris)
     return MaterializeResult(metadata={"uris": uris})
 
@@ -90,21 +85,15 @@ def raw_station_information(context: AssetExecutionContext) -> str:
 
 
 @asset(group_name="bronze_station_information")
-def parquet_station_information(
-    context: AssetExecutionContext, raw_station_information: str
-) -> list[str]:
-    """Conversion Polars typée du référentiel stations en Parquet local."""
-    paths = to_parquet.convert(Path(raw_station_information))
-    context.log.info("Parquet écrits : %s", paths)
-    return [str(p) for p in paths]
-
-
-@asset(group_name="bronze_station_information")
 def minio_station_information(
-    context: AssetExecutionContext, parquet_station_information: list[str]
+    context: AssetExecutionContext, raw_station_information: str
 ) -> MaterializeResult:
-    """Upload des Parquet station_information vers MinIO bronze/."""
-    uris = [minio_client.upload_parquet(Path(p)) for p in parquet_station_information]
+    """Conversion Polars typée en mémoire puis upload du référentiel vers MinIO bronze/.
+
+    Aucun Parquet local : seul le JSON brut (landing) subsiste sur le disque.
+    """
+    objects = to_parquet.convert(Path(raw_station_information))
+    uris = [minio_client.upload_parquet_bytes(key, data) for key, data in objects]
     context.log.info("Objets téléversés : %s", uris)
     return MaterializeResult(metadata={"uris": uris})
 
@@ -125,17 +114,13 @@ def dbt_velos_assets(context: AssetExecutionContext, dbt: DbtCliResource):
 
 job_collecte_status = define_asset_job(
     name="collecte_station_status",
-    selection=AssetSelection.assets(
-        raw_station_status, parquet_station_status, minio_station_status
-    ),
+    selection=AssetSelection.assets(raw_station_status, minio_station_status),
 )
 
 job_collecte_information = define_asset_job(
     name="collecte_station_information",
     selection=AssetSelection.assets(
-        raw_station_information,
-        parquet_station_information,
-        minio_station_information,
+        raw_station_information, minio_station_information
     ),
 )
 
@@ -172,10 +157,8 @@ def sensor_nouveau_parquet_bronze(
 defs = Definitions(
     assets=[
         raw_station_status,
-        parquet_station_status,
         minio_station_status,
         raw_station_information,
-        parquet_station_information,
         minio_station_information,
         dbt_velos_assets,
     ],

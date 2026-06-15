@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -89,7 +90,7 @@ def test_station_information_nom_localise() -> None:
     assert df["capacity"].dtype == pl.Int32
 
 
-def test_convert_ecrit_parquet_partitionne_et_idempotent(tmp_path: Path) -> None:
+def test_convert_produit_parquet_en_memoire_et_idempotent(tmp_path: Path) -> None:
     landing = tmp_path / "landing" / "station_status" / "date=2026-06-12"
     landing.mkdir(parents=True)
     raw = landing / "20260612T080500Z.json"
@@ -99,27 +100,24 @@ def test_convert_ecrit_parquet_partitionne_et_idempotent(tmp_path: Path) -> None
         ),
         encoding="utf-8",
     )
-    bronze = tmp_path / "bronze"
 
-    chemins = to_parquet.convert(raw, base_dir=bronze)
+    objets = to_parquet.convert(raw)
 
-    assert chemins == [
-        bronze / "station_status" / "date=2026-06-12" / "20260612T080500Z.parquet",
-        bronze
-        / "station_status_vehicle"
-        / "date=2026-06-12"
-        / "20260612T080500Z.parquet",
+    cles = [cle for cle, _ in objets]
+    assert cles == [
+        "bronze/station_status/date=2026-06-12/20260612T080500Z.parquet",
+        "bronze/station_status_vehicle/date=2026-06-12/20260612T080500Z.parquet",
     ]
+    # Aucun Parquet n'est écrit sur le disque local : tout vit en mémoire.
+    assert list(tmp_path.rglob("*.parquet")) == []
 
-    # Conversion déterministe : un re-run écrase les mêmes fichiers à
-    # contenu identique, jamais de doublon.
-    contenu_initial = chemins[0].read_bytes()
-    chemins_bis = to_parquet.convert(raw, base_dir=bronze)
-    assert chemins_bis == chemins
-    assert chemins[0].read_bytes() == contenu_initial
-    assert len(list(bronze.rglob("*.parquet"))) == 2
+    # Conversion déterministe : un re-run produit exactement les mêmes octets.
+    octets_initiaux = [data for _, data in objets]
+    objets_bis = to_parquet.convert(raw)
+    assert [data for _, data in objets_bis] == octets_initiaux
 
-    relu = pl.read_parquet(chemins[0])
+    # Le Parquet en mémoire est relisible et typé.
+    relu = pl.read_parquet(io.BytesIO(objets[0][1]))
     assert relu.schema == to_parquet.SCHEMA_STATION_STATUS
     assert relu.height == 2
 

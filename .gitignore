@@ -1,7 +1,7 @@
 # Secrets — jamais commités
 .env
 
-# Données locales (landing JSON + Parquet bronze)
+# Données locales (landing JSON uniquement ; le Parquet bronze ne vit que sur MinIO)
 data/
 
 # DuckDB matérialisé par dbt
